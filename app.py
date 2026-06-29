@@ -1,16 +1,16 @@
 import streamlit as st
-import openai
+import openai  # Groq 相容 OpenAI 的套件，所以不用換 import
 from pydantic import BaseModel, Field
 from typing import List
 import os
 
 # 1. 網頁基本配置
-st.set_page_config(page_title="急難紓困 AI 智慧審核系統", layout="wide")
+st.set_page_config(page_title="急難紓困 AI 智慧審核系統(Groq版)", layout="wide")
 st.title(" 強化社會安全網－急難紓困 AI 輔助審核系統")
-st.caption("依據官方作業手冊，遵循「速訪、速評、速發」原則設計")
+st.caption("依據官方作業手冊設計（採用 Groq 免費高速 Llama 3 模型）")
 st.markdown("---")
 
-# 2. 定義符合您設計的 JSON 結構化輸出格式 (JSON Schema)
+# 2. 定義 JSON 結構化輸出格式 (JSON Schema)
 class ApplicationInfo(BaseModel):
     case_source: str = Field(description="通報來源或通報人姓名")
     applicant_name: str = Field(description="個案/案主姓名")
@@ -46,12 +46,12 @@ class ScreeningResult(BaseModel):
     action_result: ActionResult
     safety_net_alert: SafetyNetAlert
 
-# 3. 安全取得 OpenAI API Key (優先從雲端環境變數讀取)
-api_key = os.getenv("OPENAI_API_KEY")
+# 3. 安全取得 Groq API Key (優先從雲端環境變數讀取)
+api_key = os.getenv("GROQ_API_KEY")
 
 # 若環境變數沒有，則在網頁左側提供手動輸入框
 if not api_key:
-    api_key = st.sidebar.text_input("請輸入 OpenAI API Key", type="password")
+    api_key = st.sidebar.text_input("請輸入 Groq API Key (gsk_...)", type="password")
 
 # 4. 前端網頁輸入介面
 raw_text = st.text_area(
@@ -69,8 +69,11 @@ if st.button("🚀 啟動 AI 智慧審核評估", type="primary"):
     else:
         with st.spinner("⏳ Agent 正在分析 7 大事由、計算家庭所得、比對認定基準中..."):
             try:
-                # 呼叫 OpenAI 並強制啟用 Structured Outputs
-                client = openai.OpenAI(api_key=api_key)
+                # 關鍵修改：將 client 指向 Groq 的伺服器網址
+                client = openai.OpenAI(
+                    base_url="https://api.groq.com/openai/v1",
+                    api_key=api_key
+                )
                 
                 system_prompt = (
                     "您是急難紓困專業審核 Agent。請根據民眾主述，嚴格遵循《強化社會安全網－急難紓困實施方案作業手冊》之規範進行判定。\n"
@@ -79,20 +82,25 @@ if st.button("🚀 啟動 AI 智慧審核評估", type="primary"):
                     "2. 急難事實認定須精準對應 7 大類事由（第3類為罹患重傷病，需休養1個月以上且無法工作）。\n"
                     "3. 家計評估計算人口僅限「實際共同生活者」。存款以每人平均不超過15萬元為原則。\n"
                     "4. 若個案疑似保護性或脆弱家庭，必須將 is_vulnerable_family 與 ecare_notified 設為 true。\n"
-                    "5. 核發金額範圍在 10,000 ~ 30,000 元之間。"
+                    "5. 核發金額範圍在 10,000 ~ 30,000 元之間。\n"
+                    "請務必完全以繁體中文回答，並精準輸出符合格式的 JSON 資料。"
                 )
 
-                completion = client.beta.chat.completions.parse(
-                    model="gpt-4o",
+                # 關鍵修改：使用 Groq 最強的開源模型 llama-3.3-70b-versatile
+                # 並且在 Groq 中，目前結構化輸出需使用工具調用或提示詞，此處改用常規 chat.completions 加上 json mode 確保相容
+                response = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
                     messages=[
-                        {"role": "system", "content": system_prompt},
+                        {"role": "system", "content": system_prompt + "\n請確保你的回應是一個合法的 JSON 字串，且欄位完全符合預期格式。"},
                         {"role": "user", "content": f"個案資料：\n{raw_text}"}
                     ],
-                    response_format=ScreeningResult,
+                    response_format={"type": "json_object"}
                 )
                 
-                # 取得結構化 JSON 結果
-                result = completion.choices[0].message.parsed
+                # 解析回傳的 JSON 字串並對齊 Pydantic Schema
+                import json
+                raw_json = response.choices[0].message.content
+                result = ScreeningResult.model_validate_json(raw_json)
                 
                 st.success("✅ 審核評估完成！")
                 
@@ -123,4 +131,6 @@ if st.button("🚀 啟動 AI 智慧審核評估", type="primary"):
                     st.write(f"**後續建議轉介單位：** {', '.join(result.action_result.referrals)}")
                     
             except Exception as e:
-                st.error(f"❌ 系統發生錯誤：{str(e)}")
+                st.error(f"❌ 系統發生錯誤或 JSON 解析失敗：{str(e)}")
+                if 'response' in locals():
+                    st.text_area("AI 原始回傳內容（供排錯）：", response.choices[0].message.content)

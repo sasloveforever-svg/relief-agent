@@ -2,12 +2,13 @@ import streamlit as st
 import openai  # Groq 相容 OpenAI 的套件，所以不用換 import
 from pydantic import BaseModel, Field
 from typing import List
+import json
 import os
 
 # 1. 網頁基本配置
 st.set_page_config(page_title="急難紓困 AI 智慧審核系統(Groq版)", layout="wide")
 st.title(" 強化社會安全網－急難紓困 AI 輔助審核系統")
-st.caption("依據官方作業手冊設計（採用 Groq 免費高速 Llama 3 模型）")
+st.caption("依據官方作業手冊設計（採用 Groq 免費高速 Llama 3.3 模型）")
 st.markdown("---")
 
 # 2. 定義 JSON 結構化輸出格式 (JSON Schema)
@@ -69,12 +70,46 @@ if st.button("🚀 啟動 AI 智慧審核評估", type="primary"):
     else:
         with st.spinner("⏳ Agent 正在分析 7 大事由、計算家庭所得、比對認定基準中..."):
             try:
-                # 關鍵修改：將 client 指向 Groq 的伺服器網址
+                # 指向 Groq 的伺服器網址
                 client = openai.OpenAI(
                     base_url="https://api.groq.com/openai/v1",
                     api_key=api_key
                 )
                 
+                # 提供嚴格的 JSON 範本供 Llama 模型參考，避免發明新欄位
+                json_template = """
+{
+  "application_info": {
+    "case_source": "通報來源或姓名",
+    "applicant_name": "案主姓名",
+    "id_number": "身分證字號",
+    "address": "地址"
+  },
+  "emergency_assessment": {
+    "category": "第3類：罹患重傷病(或其他大類)",
+    "description": "事實摘要描述",
+    "is_main_breadwinner": true,
+    "proof_documents": ["診斷證明書"]
+  },
+  "financial_status": {
+    "household_size": 1,
+    "monthly_total_income": 0,
+    "per_capita_income": 0,
+    "total_savings": 5000,
+    "is_eligible_by_poverty_line": true
+  },
+  "action_result": {
+    "approved_amount": 20000,
+    "payment_method": "一次性發給",
+    "referrals": ["醫療補助"]
+  },
+  "safety_net_alert": {
+    "is_vulnerable_family": false,
+    "ecare_notified": false
+  }
+}
+                """
+
                 system_prompt = (
                     "您是急難紓困專業審核 Agent。請根據民眾主述，嚴格遵循《強化社會安全網－急難紓困實施方案作業手冊》之規範進行判定。\n"
                     "核心準則：\n"
@@ -82,23 +117,23 @@ if st.button("🚀 啟動 AI 智慧審核評估", type="primary"):
                     "2. 急難事實認定須精準對應 7 大類事由（第3類為罹患重傷病，需休養1個月以上且無法工作）。\n"
                     "3. 家計評估計算人口僅限「實際共同生活者」。存款以每人平均不超過15萬元為原則。\n"
                     "4. 若個案疑似保護性或脆弱家庭，必須將 is_vulnerable_family 與 ecare_notified 設為 true。\n"
-                    "5. 核發金額範圍在 10,000 ~ 30,000 元之間。\n"
-                    "請務必完全以繁體中文回答，並精準輸出符合格式的 JSON 資料。"
+                    "5. 核發金額範圍在 10,000 ~ 30,000 元之間。\n\n"
+                    "【重要輸出規範】\n"
+                    f"請務必完全以繁體中文回答。你必須『完全、嚴格』依照以下 JSON 範例的格式與鍵值(Keys)回傳資料，絕對不能發明新欄位或將欄位打散：\n{json_template}"
                 )
 
-                # 關鍵修改：使用 Groq 最強的開源模型 llama-3.3-70b-versatile
-                # 並且在 Groq 中，目前結構化輸出需使用工具調用或提示詞，此處改用常規 chat.completions 加上 json mode 確保相容
+                # 呼叫 Groq 模型 (使用低隨機性 temperature=0.1 確保聽話)
                 response = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[
-                        {"role": "system", "content": system_prompt + "\n請確保你的回應是一個合法的 JSON 字串，且欄位完全符合預期格式。"},
-                        {"role": "user", "content": f"個案資料：\n{raw_text}"}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"請分析以下個案並嚴格依範例格式輸出 JSON：\n{raw_text}"}
                     ],
-                    response_format={"type": "json_object"}
+                    response_format={"type": "json_object"},
+                    temperature=0.1
                 )
                 
                 # 解析回傳的 JSON 字串並對齊 Pydantic Schema
-                import json
                 raw_json = response.choices[0].message.content
                 result = ScreeningResult.model_validate_json(raw_json)
                 
@@ -133,4 +168,5 @@ if st.button("🚀 啟動 AI 智慧審核評估", type="primary"):
             except Exception as e:
                 st.error(f"❌ 系統發生錯誤或 JSON 解析失敗：{str(e)}")
                 if 'response' in locals():
-                    st.text_area("AI 原始回傳內容（供排錯）：", response.choices[0].message.content)
+                    with st.expander("🔍 查看 AI 原始回傳內容（供排錯用）"):
+                        st.code(response.choices[0].message.content, language="json")

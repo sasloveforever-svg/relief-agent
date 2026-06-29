@@ -11,12 +11,13 @@ import os
 st.set_page_config(page_title="急難紓困 AI 智慧審核系統 V2", layout="wide")
 
 # CSS 注入：美化卡片介面與標題
-st.markdown("""
+# 替換成這段全新、相容性更好的寫法：
+st.html("""
 <style>
     .reportview-container .main .block-container { padding-top: 2rem; }
     .card-title { font-size: 1.2rem; font-weight: bold; margin-bottom: 0.5rem; }
 </style>
-""", unsafe_allow_accessible_html=True)
+""")
 
 st.title("🛡️ 強化社會安全網－急難紓困 AI 輔助審核系統 V2")
 st.caption("⚖️ 專業版（本系統僅提供分析與建議，不具行政處分效力，最終仍由承辦人審核決定）")
